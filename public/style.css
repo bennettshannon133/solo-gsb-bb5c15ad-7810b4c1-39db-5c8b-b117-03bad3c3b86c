@@ -452,3 +452,48 @@ input[type="number"] { width: 70px; }
   user-select: none;
 }
 .alt-details[open] summary { margin-bottom: 8px; }
+
+/* ================= 巡演装箱 ================= */
+.packing-settings {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.packing-settings #pack-capacity { width: 90px; }
+.col-pack-weight { width: 130px; }
+.pack-weight { width: 100px; }
+.pack-overweight { color: #ff9d9a; font-weight: bold; }
+.packing-pairs { margin-top: 14px; }
+
+.pack-result { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.pack-bin {
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.pack-bin-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+.pack-bin-title { font-weight: bold; font-size: 15px; }
+.pack-bin-head strong { color: var(--accent); }
+.pack-bin-items { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; }
+.pack-item-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 2px 12px;
+  font-size: 13.5px;
+}

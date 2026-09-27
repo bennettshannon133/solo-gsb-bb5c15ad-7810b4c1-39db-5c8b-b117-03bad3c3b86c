@@ -2,6 +2,7 @@
 
 /* ================= 状态 ================= */
 const MAX_SCENES = 12;
+const MAX_PACK_ITEMS = 14;
 let uidCounter = 0;
 const uid = () => `s${Date.now().toString(36)}_${uidCounter++}`;
 
@@ -16,6 +17,7 @@ const state = {
   live: null, // 最近一次求解/重排结果（当前节目单）
   replan: null, // 演出中重排会话：{ prefixIds, chainStartOrder, kDraft, stageProps }
   savedReplan: null, // 随方案保存的重排状态（载入后用于自动恢复）
+  packing: null, // 巡演装箱配置：{ capacity, weights: { 道具名: 重量 }, pairs: [{ a, b }] }
 };
 
 const isTimed = () => state.mode === 'timed';
@@ -71,6 +73,7 @@ function renderScenes() {
     propsInput.placeholder = '如：长桌, 椅子, 烛台';
     propsInput.addEventListener('input', () => {
       s.props = propsInput.value.split(/[,，]/).map(x => x.trim()).filter(Boolean);
+      renderPacking(); // 道具变化同步到装箱清单（不重建本输入框，不打断输入）
     });
     tdProps.appendChild(propsInput);
 
@@ -263,6 +266,240 @@ function constraintItem(text, onRemove) {
 function renderAll() {
   renderScenes();
   renderConstraintForms();
+  renderPacking();
+}
+
+/* ================= 巡演装箱 ================= */
+/** 从当前场景道具汇总去重待运输道具（保持场景序、场景内顺序）。 */
+let lastPackingItemsKey = null;
+function collectPackingItems() {
+  const seen = new Set();
+  const out = [];
+  for (const s of state.scenes) {
+    for (const p of s.props || []) {
+      const name = String(p).trim();
+      if (name && !seen.has(name)) { seen.add(name); out.push(name); }
+    }
+  }
+  return out;
+}
+
+function defaultPacking() {
+  return { capacity: 10, weights: {}, pairs: [] };
+}
+
+/**
+ * 按当前场景道具校对装箱配置：为新道具补默认重量 1；
+ * 删除已不存在的重量，清理引用了已删除道具的互斥对。
+ */
+function reconcilePacking(items) {
+  if (!state.packing) state.packing = defaultPacking();
+  const set = new Set(items);
+  const weights = {};
+  for (const name of items) {
+    const w = Number(state.packing.weights[name]);
+    weights[name] = (Number.isInteger(w) && w > 0) ? w : 1;
+  }
+  state.packing.weights = weights;
+  state.packing.pairs = state.packing.pairs.filter(p => set.has(p.a) && set.has(p.b));
+  const cap = Number(state.packing.capacity);
+  if (!Number.isInteger(cap) || cap <= 0) state.packing.capacity = 10;
+}
+
+function renderPacking() {
+  const items = collectPackingItems();
+  reconcilePacking(items);
+  const over = items.length > MAX_PACK_ITEMS;
+
+  // 道具集合变化后，旧的装箱结果即失效
+  const itemsKey = items.join('\u0001');
+  if (itemsKey !== lastPackingItemsKey) {
+    lastPackingItemsKey = itemsKey;
+    clearPackingResult();
+  }
+
+  $('#pack-capacity').value = state.packing.capacity;
+  $('#packing-count').textContent = items.length
+    ? `待运输道具 ${items.length} / ${MAX_PACK_ITEMS} 件（由各场景道具汇总去重生成）`
+    : '当前场景还没有任何道具，请先在第 1 节录入场景与道具';
+  $('#packing-count').classList.toggle('hint-over', over);
+  if (over) {
+    $('#packing-count').textContent += `；已超过 ${MAX_PACK_ITEMS} 件上限，无法装箱，请减少道具种类`;
+  }
+
+  const tbody = $('#packing-tbody');
+  tbody.innerHTML = '';
+  items.forEach((name, i) => {
+    const tr = document.createElement('tr');
+
+    const tdIdx = document.createElement('td');
+    tdIdx.textContent = i + 1;
+
+    const tdName = document.createElement('td');
+    tdName.textContent = name;
+    if (state.packing.weights[name] > state.packing.capacity) tdName.classList.add('pack-overweight');
+
+    const tdW = document.createElement('td');
+    const wInput = document.createElement('input');
+    wInput.type = 'number';
+    wInput.className = 'pack-weight';
+    wInput.min = '1';
+    wInput.step = '1';
+    wInput.value = state.packing.weights[name];
+    wInput.addEventListener('input', () => {
+      state.packing.weights[name] = Math.max(0, Math.floor(Number(wInput.value) || 0));
+      clearPackingResult();
+      // 只就地更新本行高亮，不重建表格（避免输入框失焦）
+      tdName.classList.toggle('pack-overweight', state.packing.weights[name] > state.packing.capacity);
+    });
+    tdW.appendChild(wInput);
+
+    tr.append(tdIdx, tdName, tdW);
+    tbody.appendChild(tr);
+  });
+
+  fillPackPairSelects();
+  renderPackPairs(items);
+  $('#btn-pack').disabled = items.length === 0 || over;
+  $('#btn-add-packpair').disabled = items.length < 2;
+}
+
+/** 只刷新道具名上的"单件超重"高亮（不重建承重输入框，避免打断输入焦点）。 */
+function refreshPackOverweight() {
+  const items = collectPackingItems();
+  $('#packing-tbody').querySelectorAll('tr').forEach((tr, i) => {
+    const nameCell = tr.children[1];
+    if (nameCell) nameCell.classList.toggle('pack-overweight', state.packing.weights[items[i]] > state.packing.capacity);
+  });
+}
+
+function fillPackPairSelects() {
+  const items = collectPackingItems();
+  for (const role of ['a', 'b']) {
+    const sel = $(`#packpair-form [data-role="${role}"]`);
+    const prev = sel.value;
+    sel.innerHTML = '';
+    for (const name of items) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    }
+    if (items.includes(prev)) sel.value = prev;
+    else if (role === 'b' && items.length > 1) sel.value = items[1];
+  }
+}
+
+function renderPackPairs(items) {
+  const list = $('#packpair-list');
+  list.innerHTML = '';
+  if (!state.packing.pairs.length) {
+    const li = document.createElement('li');
+    const none = document.createElement('span');
+    none.className = 'hint';
+    none.textContent = '暂无互斥道具对';
+    li.appendChild(none);
+    list.appendChild(li);
+    return;
+  }
+  const indexOf = (n) => items.indexOf(n);
+  const sorted = state.packing.pairs
+    .map((p, i) => ({ p, i, k: Math.min(indexOf(p.a), indexOf(p.b)) * 1000 + Math.max(indexOf(p.a), indexOf(p.b)) }))
+    .sort((x, y) => x.k - y.k);
+  for (const { p, i } of sorted) {
+    list.appendChild(constraintItem(
+      `「${p.a}」与「${p.b}」不能同箱`,
+      () => { state.packing.pairs.splice(i, 1); clearPackingResult(); renderPacking(); }
+    ));
+  }
+}
+
+function clearPackingResult() {
+  $('#packing-result').innerHTML = '';
+}
+
+function packingPayload() {
+  const items = collectPackingItems();
+  const weights = {};
+  for (const name of items) weights[name] = state.packing.weights[name];
+  return {
+    scenes: payload().scenes,
+    packing: {
+      capacity: state.packing.capacity,
+      weights,
+      pairs: state.packing.pairs.slice(),
+    },
+  };
+}
+
+async function doPack() {
+  const data = await api('/api/pack', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(packingPayload()),
+  });
+  renderPackingResult(data);
+}
+
+function renderPackingResult(data) {
+  const box = $('#packing-result');
+  box.innerHTML = '';
+  if (data.errors) { box.appendChild(errorBlock(data.errors)); return; }
+  if (!data.ok) {
+    box.appendChild(errorBlock(data.errors && data.errors.length ? data.errors : ['装箱失败，请检查重量与承重配置']));
+    return;
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'pack-result';
+
+  const summary = document.createElement('div');
+  summary.className = 'timed-summary';
+  summary.innerHTML =
+    `<span>总箱数：<strong>${data.totalBins}</strong> 箱</span>` +
+    `<span>道具总重量：<strong>${data.totalWeight}</strong></span>` +
+    `<span>单箱承重：${data.capacity}</span>`;
+  wrap.appendChild(summary);
+
+  data.bins.forEach((bin, i) => {
+    const card = document.createElement('div');
+    card.className = 'pack-bin';
+    const head = document.createElement('div');
+    head.className = 'pack-bin-head';
+    const usage = bin.weight >= data.capacity
+      ? '<span class="cap-badge cap-at">满载</span>'
+      : `<span class="cap-badge cap-under">余 ${data.capacity - bin.weight}</span>`;
+    head.innerHTML =
+      `<span class="pack-bin-title">📦 第 ${i + 1} 箱</span>` +
+      `<span>${bin.items.length} 件 ｜ 重量 <strong>${bin.weight}</strong> / ${data.capacity}</span>` +
+      usage;
+    card.appendChild(head);
+
+    const chips = document.createElement('div');
+    chips.className = 'pack-bin-items';
+    bin.items.forEach((name, j) => {
+      if (j > 0) {
+        const comma = document.createElement('span');
+        comma.className = 'hint';
+        comma.textContent = '、';
+        chips.appendChild(comma);
+      }
+      const chip = document.createElement('span');
+      chip.className = 'pack-item-chip';
+      chip.textContent = `${name}（${weightOf(data, name)}）`;
+      chips.appendChild(chip);
+    });
+    card.appendChild(chips);
+    wrap.appendChild(card);
+  });
+
+  box.appendChild(wrap);
+  box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function weightOf(data, name) {
+  const it = (data.items || []).find(x => x.name === name);
+  return it ? it.weight : '';
 }
 
 /* ================= 求解 ================= */
@@ -1003,6 +1240,14 @@ async function savePlan() {
       chainStartOrder: state.replan.chainStartOrder,
     };
   }
+  // 装箱配置随方案一起持久化
+  p.packing = state.packing
+    ? {
+        capacity: state.packing.capacity,
+        weights: state.packing.weights,
+        pairs: state.packing.pairs.map(x => ({ ...x })),
+      }
+    : null;
   const body = JSON.stringify({ name, ...p });
   const headers = { 'Content-Type': 'application/json' };
   const data = state.planId
@@ -1022,6 +1267,8 @@ async function loadPlan() {
   hydrateFromPlan(data.plan);
   $('#plan-name').value = data.plan.name;
   $('#result-card').hidden = true;
+  clearPackingResult();
+  lastPackingItemsKey = null;
   state.live = null;
   state.replan = null;
   if (data.plan.replanState && Array.isArray(data.plan.replanState.prefixIds)
@@ -1122,6 +1369,16 @@ function hydrateFromPlan(p) {
     fixedPositions: (p.constraints.fixedPositions || []).map(f => ({ ...f })),
     forbiddenAdjacencies: (p.constraints.forbiddenAdjacencies || []).map(f => ({ ...f })),
   };
+  // 旧方案没有 packing 字段：按默认装箱配置处理
+  const pk = p.packing && typeof p.packing === 'object' ? p.packing : null;
+  const pkCap = pk && Number(pk.capacity);
+  state.packing = {
+    capacity: (Number.isInteger(pkCap) && pkCap > 0) ? pkCap : 10,
+    weights: pk && pk.weights && typeof pk.weights === 'object' ? { ...pk.weights } : {},
+    pairs: pk && Array.isArray(pk.pairs)
+      ? pk.pairs.filter(x => x && typeof x === 'object').map(x => ({ a: String(x.a), b: String(x.b) }))
+      : [],
+  };
   $('#time-limit').value = state.timeLimit;
   applyMode(state.mode);
 }
@@ -1146,10 +1403,12 @@ function newPlan() {
   state.live = null;
   state.replan = null;
   state.savedReplan = null;
+  state.packing = defaultPacking();
   $('#plan-name').value = '';
   $('#plan-select').value = '';
   applyMode('classic');
   $('#result-card').hidden = true;
+  clearPackingResult();
   showStatus('已新建空白方案');
 }
 
@@ -1261,6 +1520,30 @@ $('#btn-add-noadj').addEventListener('click', () => {
   if (!a || !b) return;
   state.constraints.forbiddenAdjacencies.push({ a, b });
   renderConstraintLists();
+});
+
+/* ================= 巡演装箱事件 ================= */
+$('#btn-pack').addEventListener('click', doPack);
+$('#btn-sync-packing').addEventListener('click', () => {
+  renderPacking();
+  const n = collectPackingItems().length;
+  showStatus(n ? `装箱清单已同步：共 ${n} 件待运输道具（已保留既有重量设置）` : '装箱清单已同步：当前还没有任何道具');
+});
+$('#pack-capacity').addEventListener('input', () => {
+  state.packing.capacity = Math.max(0, Math.floor(Number($('#pack-capacity').value) || 0));
+  clearPackingResult();
+  refreshPackOverweight();
+});
+$('#btn-add-packpair').addEventListener('click', () => {
+  const a = $('#packpair-form [data-role="a"]').value;
+  const b = $('#packpair-form [data-role="b"]').value;
+  if (!a || !b || a === b) return;
+  const dup = state.packing.pairs.some(p =>
+    (p.a === a && p.b === b) || (p.a === b && p.b === a));
+  if (dup) { showStatus('该互斥道具对已存在', true); return; }
+  state.packing.pairs.push({ a, b });
+  clearPackingResult();
+  renderPacking();
 });
 
 /* ================= 初始化 ================= */

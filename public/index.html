@@ -9,7 +9,7 @@
 <body>
   <header>
     <h1>🎭 舞台换景顺序优化</h1>
-    <p>录入场景与道具，设置约束，计算道具增减次数最少的演出顺序（最多 12 个场景）。演出进行中还可确认已完成前缀、录入舞台实况，只重排剩余场景。</p>
+    <p>录入场景与道具，设置约束，计算道具增减次数最少的演出顺序（最多 12 个场景）。演出进行中还可确认已完成前缀、录入舞台实况，只重排剩余场景；道具还可汇总去重后进行巡演装箱（最多 14 件，按承重与互斥对求最少箱数）。</p>
   </header>
 
   <main>
@@ -129,8 +129,44 @@
       <p class="hint" id="status-line"></p>
     </section>
 
+    <section class="card" id="packing-card">
+      <div class="card-head">
+        <h2>4. 巡演装箱</h2>
+        <button id="btn-sync-packing" class="btn btn-ghost">↻ 同步道具清单</button>
+      </div>
+      <p class="hint" id="packing-count"></p>
+      <div class="packing-settings">
+        <label>单箱承重：
+          <input type="number" id="pack-capacity" min="1" step="1" value="10">
+        </label>
+        <span class="hint">每箱道具重量合计不得超过该值；每件道具的重量须为正整数。</span>
+      </div>
+      <table id="packing-table">
+        <thead>
+          <tr><th class="col-idx">#</th><th>道具</th><th class="col-pack-weight">重量</th></tr>
+        </thead>
+        <tbody id="packing-tbody"></tbody>
+      </table>
+      <div class="constraint-group packing-pairs">
+        <h3>不能同箱的道具对 <span class="hint">互斥道具不得装入同一箱</span></h3>
+        <div class="constraint-form" id="packpair-form">
+          <select data-role="a"></select>
+          <span>与</span>
+          <select data-role="b"></select>
+          <span>不同箱</span>
+          <button class="btn" id="btn-add-packpair">添加</button>
+        </div>
+        <ul class="constraint-list" id="packpair-list"></ul>
+      </div>
+      <div class="toolbar">
+        <button id="btn-pack" class="btn btn-primary">📦 计算装箱方案</button>
+        <span class="hint">在不超过 14 件道具内求箱数最少的完整分箱</span>
+      </div>
+      <div id="packing-result"></div>
+    </section>
+
     <section class="card" id="result-card" hidden>
-      <h2>4. 计算结果</h2>
+      <h2>5. 计算结果</h2>
       <div id="result"></div>
     </section>
   </main>

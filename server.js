@@ -3,6 +3,7 @@
 const path = require('path');
 const express = require('express');
 const { solve, replan, MAX_SCENES, MAX_ALTERNATIVES, normalizeProps } = require('./solver');
+const { packItems, validatePacking } = require('./packing');
 const store = require('./store');
 
 const app = express();
@@ -201,6 +202,39 @@ function sanitizeReplanState(raw, idSet) {
   return { prefixIds, stageProps, originalOrder, chainStartOrder: chainStart };
 }
 
+/**
+ * 校验方案保存载荷里附带的装箱配置（可选；只做结构规范化，不对照场景道具，
+ * 不合法的细节直接丢弃，不阻断保存）。保存形如
+ * { capacity, weights: { 道具名: 正整数 }, pairs: [{ a, b }] }。
+ */
+function sanitizePackingState(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const cap = Number(raw.capacity);
+  const capacity = (Number.isInteger(cap) && cap > 0) ? cap : 10;
+  const weights = {};
+  if (raw.weights && typeof raw.weights === 'object' && !Array.isArray(raw.weights)) {
+    for (const [k, v] of Object.entries(raw.weights)) {
+      const name = String(k).trim();
+      const w = Number(v);
+      if (name && Number.isInteger(w) && w > 0) weights[name] = w;
+    }
+  }
+  const pairs = [];
+  if (Array.isArray(raw.pairs)) {
+    const seen = new Set();
+    for (const pr of raw.pairs) {
+      const a = String((pr && pr.a) ?? '').trim();
+      const b = String((pr && pr.b) ?? '').trim();
+      if (!a || !b || a === b) continue;
+      const key = [a, b].sort().join('\u0001');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push({ a, b });
+    }
+  }
+  return { capacity, weights, pairs };
+}
+
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
 app.post('/api/solve', (req, res) => {
@@ -219,6 +253,13 @@ app.post('/api/replan', (req, res) => {
   res.json(replan(scenes, constraints, { mode, timeLimit, opLimit, replan: replanOpts }));
 });
 
+/** 巡演装箱：从场景道具汇总去重，按承重与互斥对求箱数最少的完整分箱 */
+app.post('/api/pack', (req, res) => {
+  const { errors, items, capacity, pairs } = validatePacking(req.body);
+  if (errors.length) return res.status(400).json({ ok: false, errors });
+  res.json(packItems(items, capacity, pairs));
+});
+
 app.get('/api/plans', (req, res) => {
   res.json({ plans: store.list() });
 });
@@ -229,7 +270,8 @@ app.post('/api/plans', (req, res) => {
   const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   if (errors.length) return res.status(400).json({ ok: false, errors });
   const replanState = sanitizeReplanState(req.body && req.body.replanState, new Set(scenes.map(s => s.id)));
-  const plan = store.create({ name, mode, timeLimit, opLimit, scenes, constraints, replanState });
+  const packing = sanitizePackingState(req.body && req.body.packing);
+  const plan = store.create({ name, mode, timeLimit, opLimit, scenes, constraints, replanState, packing });
   res.status(201).json({ ok: true, plan });
 });
 
@@ -245,7 +287,8 @@ app.put('/api/plans/:id', (req, res) => {
   const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   if (errors.length) return res.status(400).json({ ok: false, errors });
   const replanState = sanitizeReplanState(req.body && req.body.replanState, new Set(scenes.map(s => s.id)));
-  const plan = store.update(req.params.id, { name, mode, timeLimit, opLimit, scenes, constraints, replanState });
+  const packing = sanitizePackingState(req.body && req.body.packing);
+  const plan = store.update(req.params.id, { name, mode, timeLimit, opLimit, scenes, constraints, replanState, packing });
   if (!plan) return res.status(404).json({ ok: false, errors: ['方案不存在'] });
   res.json({ ok: true, plan });
 });
