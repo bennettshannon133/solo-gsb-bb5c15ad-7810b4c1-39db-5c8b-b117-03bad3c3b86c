@@ -16,6 +16,7 @@ const state = {
   live: null, // 最近一次求解/重排结果（当前节目单）
   replan: null, // 演出中重排会话：{ prefixIds, chainStartOrder, kDraft, stageProps }
   savedReplan: null, // 随方案保存的重排状态（载入后用于自动恢复）
+  packing: { weights: {}, capacity: 20, exclusions: [] }, // 巡演装箱配置：各道具重量、单箱承重、不能同箱的道具对
 };
 
 const isTimed = () => state.mode === 'timed';
@@ -263,6 +264,145 @@ function constraintItem(text, onRemove) {
 function renderAll() {
   renderScenes();
   renderConstraintForms();
+  renderPacking();
+}
+
+/* ================= 巡演装箱 ================= */
+const MAX_PACK_ITEMS = 14;
+
+/** 全部场景道具按录入顺序汇总去重，生成待运输道具清单 */
+function tourProps() {
+  const seen = new Set();
+  const out = [];
+  for (const s of state.scenes) {
+    for (const p of s.props) {
+      if (!seen.has(p)) { seen.add(p); out.push(p); }
+    }
+  }
+  return out;
+}
+
+function fillPropSelect(sel, props) {
+  sel.innerHTML = '';
+  for (const name of props) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+}
+
+function renderPackExclList() {
+  const list = $('#pack-excl-list');
+  list.innerHTML = '';
+  state.packing.exclusions.forEach((p, i) => {
+    list.appendChild(constraintItem(
+      `「${p.a}」与「${p.b}」不能同箱`,
+      () => { state.packing.exclusions.splice(i, 1); renderPackExclList(); }
+    ));
+  });
+}
+
+function renderPacking() {
+  const props = tourProps();
+  const propSet = new Set(props);
+  // 清理已不存在道具的互斥对
+  state.packing.exclusions = state.packing.exclusions.filter(p => propSet.has(p.a) && propSet.has(p.b));
+
+  const empty = props.length === 0;
+  $('#packing-empty').hidden = !empty;
+  $('#packing-body').hidden = empty;
+  $('#btn-pack').disabled = empty;
+  $('#pack-result').innerHTML = '';
+  if (empty) return;
+
+  const tbody = $('#packing-tbody');
+  tbody.innerHTML = '';
+  props.forEach((name, i) => {
+    const tr = document.createElement('tr');
+
+    const tdIdx = document.createElement('td');
+    tdIdx.textContent = i + 1;
+
+    const tdName = document.createElement('td');
+    tdName.textContent = name;
+
+    const tdW = document.createElement('td');
+    const wInput = document.createElement('input');
+    wInput.type = 'number';
+    wInput.className = 'pack-weight';
+    wInput.min = '1';
+    wInput.step = '1';
+    wInput.value = state.packing.weights[name] ?? 1;
+    wInput.addEventListener('input', () => {
+      state.packing.weights[name] = Number(wInput.value);
+    });
+    tdW.appendChild(wInput);
+
+    tr.append(tdIdx, tdName, tdW);
+    tbody.appendChild(tr);
+  });
+
+  const countEl = $('#packing-count');
+  const over = props.length > MAX_PACK_ITEMS;
+  countEl.textContent = `共 ${props.length} 件待运输道具（按录入顺序去重；装箱上限 ${MAX_PACK_ITEMS} 件）`
+    + (over ? '——已超过上限，请减少道具种类' : '');
+  countEl.classList.toggle('hint-over', over);
+
+  $('#pack-capacity').value = state.packing.capacity;
+  fillPropSelect($('#pack-excl-form [data-role="a"]'), props);
+  fillPropSelect($('#pack-excl-form [data-role="b"]'), props);
+  renderPackExclList();
+}
+
+async function doPack() {
+  const props = tourProps();
+  const data = await api('/api/pack', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: props.map(name => ({ name, weight: state.packing.weights[name] ?? 1 })),
+      capacity: state.packing.capacity,
+      exclusions: state.packing.exclusions,
+    }),
+  });
+  renderPackResult(data);
+}
+
+function renderPackResult(data) {
+  const box = $('#pack-result');
+  box.innerHTML = '';
+  if (!data.ok) {
+    box.appendChild(errorBlock(data.errors || ['装箱求解失败']));
+    return;
+  }
+  const total = document.createElement('p');
+  total.className = 'total-line';
+  total.innerHTML = `共 <strong>${data.boxCount}</strong> 箱`
+    + `　<span class="hint">总重量 ${data.totalWeight} · 单箱承重 ${data.capacity}（箱内与箱间均按道具录入顺序）</span>`;
+  box.appendChild(total);
+
+  const ul = document.createElement('ul');
+  ul.className = 'box-list';
+  for (const b of data.boxes) {
+    const li = document.createElement('li');
+    const head = document.createElement('div');
+    head.className = 'box-head';
+    const cls = b.weight >= data.capacity ? 'cap-badge cap-at' : 'cap-badge cap-under';
+    head.innerHTML = `<strong>箱 ${b.index}</strong>　<span class="${cls}">本箱 ${b.weight}/${data.capacity}</span>`;
+    li.appendChild(head);
+    const chips = document.createElement('div');
+    chips.className = 'box-items';
+    for (const it of b.items) {
+      const chip = document.createElement('span');
+      chip.className = 'box-chip';
+      chip.textContent = `${it.name}（${it.weight}）`;
+      chips.appendChild(chip);
+    }
+    li.appendChild(chips);
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
 }
 
 /* ================= 求解 ================= */
@@ -283,6 +423,12 @@ function payload() {
   if (isTimed()) base.timeLimit = state.timeLimit;
   if (state.opLimit !== null) base.opLimit = state.opLimit;
   if (state.alternatives > 1) base.alternatives = state.alternatives;
+  // 巡演装箱配置随方案保存 / 载入（求解接口会忽略该字段）
+  base.packing = {
+    weights: { ...state.packing.weights },
+    capacity: state.packing.capacity,
+    exclusions: state.packing.exclusions.map(p => ({ ...p })),
+  };
   return base;
 }
 
@@ -1122,6 +1268,22 @@ function hydrateFromPlan(p) {
     fixedPositions: (p.constraints.fixedPositions || []).map(f => ({ ...f })),
     forbiddenAdjacencies: (p.constraints.forbiddenAdjacencies || []).map(f => ({ ...f })),
   };
+  // 旧方案没有 packing 字段：按默认装箱配置处理（各道具重量 1、单箱承重 20、无互斥对）
+  const pk = (p.packing && typeof p.packing === 'object') ? p.packing : {};
+  state.packing = { weights: {}, capacity: 20, exclusions: [] };
+  if (pk.weights && typeof pk.weights === 'object') {
+    for (const [k, v] of Object.entries(pk.weights)) {
+      const w = Number(v);
+      if (Number.isInteger(w) && w > 0) state.packing.weights[String(k)] = w;
+    }
+  }
+  const cap = Number(pk.capacity);
+  if (Number.isInteger(cap) && cap > 0) state.packing.capacity = cap;
+  if (Array.isArray(pk.exclusions)) {
+    state.packing.exclusions = pk.exclusions
+      .filter(x => x && x.a && x.b && x.a !== x.b)
+      .map(x => ({ a: String(x.a), b: String(x.b) }));
+  }
   $('#time-limit').value = state.timeLimit;
   applyMode(state.mode);
 }
@@ -1143,6 +1305,7 @@ function newPlan() {
   $('#alt-count').value = '1';
   state.scenes = [];
   state.constraints = { dependencies: [], fixedPositions: [], forbiddenAdjacencies: [] };
+  state.packing = { weights: {}, capacity: 20, exclusions: [] };
   state.live = null;
   state.replan = null;
   state.savedReplan = null;
@@ -1239,6 +1402,20 @@ $('#op-limit').addEventListener('input', () => {
 $('#alt-count').addEventListener('change', () => {
   const v = Number($('#alt-count').value);
   state.alternatives = (v >= 2 && v <= 3) ? v : 1;
+});
+
+$('#btn-pack').addEventListener('click', doPack);
+$('#pack-capacity').addEventListener('input', () => {
+  state.packing.capacity = Number($('#pack-capacity').value);
+});
+$('#btn-add-pack-excl').addEventListener('click', () => {
+  const a = $('#pack-excl-form [data-role="a"]').value;
+  const b = $('#pack-excl-form [data-role="b"]').value;
+  if (!a || !b || a === b) return;
+  const dup = state.packing.exclusions.some(p => (p.a === a && p.b === b) || (p.a === b && p.b === a));
+  if (dup) return;
+  state.packing.exclusions.push({ a, b });
+  renderPackExclList();
 });
 
 $('#btn-add-dep').addEventListener('click', () => {

@@ -3,6 +3,7 @@
 const path = require('path');
 const express = require('express');
 const { solve, replan, MAX_SCENES, MAX_ALTERNATIVES, normalizeProps } = require('./solver');
+const { solvePacking } = require('./packing');
 const store = require('./store');
 
 const app = express();
@@ -201,7 +202,46 @@ function sanitizeReplanState(raw, idSet) {
   return { prefixIds, stageProps, originalOrder, chainStartOrder: chainStart };
 }
 
+/**
+ * 校验方案保存载荷里附带的巡演装箱配置（可选；字段不合法则忽略该配置，不阻断保存）。
+ * 结构：{ weights: { 道具名: 正整数 }, capacity: 正整数|null, exclusions: [{a, b}] }
+ */
+function sanitizePacking(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const weights = {};
+  if (raw.weights && typeof raw.weights === 'object') {
+    for (const [k, v] of Object.entries(raw.weights)) {
+      const name = String(k).trim();
+      const w = Number(v);
+      if (name && Number.isInteger(w) && w > 0) weights[name] = w;
+    }
+  }
+  const cap = Number(raw.capacity);
+  const capacity = (Number.isInteger(cap) && cap > 0) ? cap : null;
+  const exclusions = [];
+  if (Array.isArray(raw.exclusions)) {
+    const seen = new Set();
+    for (const p of raw.exclusions) {
+      const a = String((p && p.a) ?? '').trim();
+      const b = String((p && p.b) ?? '').trim();
+      if (!a || !b || a === b) continue;
+      const key = [a, b].sort().join('');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      exclusions.push({ a, b });
+    }
+  }
+  return { weights, capacity, exclusions };
+}
+
 app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+/** 巡演装箱：从待运输道具清单求箱数最少的完整分箱 */
+app.post('/api/pack', (req, res) => {
+  const result = solvePacking(req.body);
+  if (!result.ok) return res.status(400).json(result);
+  res.json(result);
+});
 
 app.post('/api/solve', (req, res) => {
   const { errors, mode, timeLimit, opLimit, alternatives, scenes, constraints } = validatePayload(req.body);
@@ -229,7 +269,8 @@ app.post('/api/plans', (req, res) => {
   const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   if (errors.length) return res.status(400).json({ ok: false, errors });
   const replanState = sanitizeReplanState(req.body && req.body.replanState, new Set(scenes.map(s => s.id)));
-  const plan = store.create({ name, mode, timeLimit, opLimit, scenes, constraints, replanState });
+  const packing = sanitizePacking(req.body && req.body.packing);
+  const plan = store.create({ name, mode, timeLimit, opLimit, scenes, constraints, replanState, packing });
   res.status(201).json({ ok: true, plan });
 });
 
@@ -245,7 +286,8 @@ app.put('/api/plans/:id', (req, res) => {
   const { errors, mode, timeLimit, opLimit, scenes, constraints } = validatePayload(req.body);
   if (errors.length) return res.status(400).json({ ok: false, errors });
   const replanState = sanitizeReplanState(req.body && req.body.replanState, new Set(scenes.map(s => s.id)));
-  const plan = store.update(req.params.id, { name, mode, timeLimit, opLimit, scenes, constraints, replanState });
+  const packing = sanitizePacking(req.body && req.body.packing);
+  const plan = store.update(req.params.id, { name, mode, timeLimit, opLimit, scenes, constraints, replanState, packing });
   if (!plan) return res.status(404).json({ ok: false, errors: ['方案不存在'] });
   res.json({ ok: true, plan });
 });

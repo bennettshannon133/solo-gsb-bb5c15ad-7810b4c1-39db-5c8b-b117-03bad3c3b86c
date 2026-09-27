@@ -452,3 +452,28 @@ input[type="number"] { width: 70px; }
   user-select: none;
 }
 .alt-details[open] summary { margin-bottom: 8px; }
+
+/* ================= 巡演装箱 ================= */
+.col-weight { width: 150px; }
+.pack-weight { width: 90px; }
+#pack-capacity { width: 90px; }
+#pack-excl-group { margin-top: 12px; }
+#pack-result { margin-top: 14px; }
+#pack-result:empty { margin-top: 0; }
+
+.box-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.box-list li {
+  background: var(--card-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.box-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.box-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.box-chip {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 2px 12px;
+  font-size: 13px;
+}
